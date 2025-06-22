@@ -1,0 +1,23 @@
+import torch
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+USTX_DIR = "2raw2"
+VOCAB_PATH = "phoneme_vocab_lstm.yaml"
+BATCH_SIZE = 128*3//4
+SEQUENCE_LEN =  5
+MAX_PITCH_POINTS = 100
+
+PHONEME_EMBEDDING_DIM = 128
+NOTE_FEATURE_DIM = 6
+ENCODER_HIDDEN_DIM = 256
+ENCODER_NUM_LAYERS = 2
+DECODER_HIDDEN_DIM = 256
+DECODER_NUM_LAYERS = 2
+DROPOUT = 0.2
+ATTENTION_HEADS = 16
+
+EPOCHS = 150
+LEARNING_RATE = 0.0005
+PLOT_EVERY = 10
+MODEL_SAVE_PATH = "autopitch_lstm_best.pth" 
