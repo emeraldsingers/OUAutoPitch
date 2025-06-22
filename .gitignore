@@ -1,5 +1,6 @@
 *.ustx
 *.yaml
+*.png
 *.pth
 *.txt
 *.pkl

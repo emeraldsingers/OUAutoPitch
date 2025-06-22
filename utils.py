@@ -8,6 +8,7 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
+import bisect
 
 import config
 
@@ -50,17 +51,59 @@ def load_ustx(file_path):
         print(f"Could not load {file_path}: {e}")
         return None
 
+def get_tempo_at_position(tempos, position):
+    if not tempos:
+        return 120.0
+    
+    tempo_positions = [t['position'] for t in tempos]
+    idx = bisect.bisect_right(tempo_positions, position) - 1
+    if idx < 0:
+        idx = 0
+    return tempos[idx]['bpm']
+
+def position_to_seconds(position, duration, tempos):
+    if not tempos:
+        return duration / 1920.0 * (60.0 / 120.0)
+    
+    end_position = position + duration
+    current_position = position
+    total_seconds = 0.0
+    
+    while current_position < end_position:
+        tempo_positions = [t['position'] for t in tempos]
+        idx = bisect.bisect_right(tempo_positions, current_position) - 1
+        if idx < 0:
+            idx = 0
+        
+        current_tempo = tempos[idx]['bpm']
+        
+        if idx + 1 < len(tempos) and tempos[idx + 1]['position'] < end_position:
+            next_position = tempos[idx + 1]['position']
+            segment_duration = next_position - current_position
+            total_seconds += segment_duration / 1920.0 * (60.0 / current_tempo)
+            current_position = next_position
+        else:
+            segment_duration = end_position - current_position
+            total_seconds += segment_duration / 1920.0 * (60.0 / current_tempo)
+            break
+    
+    return total_seconds
+
 def parse_ustx_files(ustx_dir):
     ustx_files = glob.glob(os.path.join(ustx_dir, "*.ustx"))
     print(f"Found {len(ustx_files)} USTX files.")
 
     all_notes = []
-    with ProcessPoolExecutor(max_workers=os.cpu_count()//2) as executor:
+    cpu_count = os.cpu_count() or 1
+    with ProcessPoolExecutor(max_workers=cpu_count//2 or 1) as executor:
         results = list(tqdm(executor.map(load_ustx, ustx_files), total=len(ustx_files), desc="Loading USTX files"))
 
     for data in tqdm(results, desc="Extracting notes"):
         if data is None or "voice_parts" not in data:
             continue
+            
+        tempos = data.get("tempos", [{"position": 0, "bpm": 120}])
+            
         for part in data["voice_parts"]:
             track_notes = []
             if "notes" not in part:
@@ -70,12 +113,16 @@ def parse_ustx_files(ustx_dir):
                 if not norm_lyric:
                     continue
                 
+                seconds = position_to_seconds(note["position"], note["duration"], tempos)
+                
                 note_info = {
                     "position": note["position"],
                     "duration": note["duration"],
+                    "seconds": seconds,
                     "tone": note["tone"],
                     "lyric": norm_lyric,
                     "pitch": note["pitch"]["data"],
+                    "tempos": tempos
                 }
                 track_notes.append(note_info)
             track_notes.sort(key=lambda n: n['position'])
@@ -88,22 +135,37 @@ def _extract_note_features(notes_in_sequence, target_note_index):
     features = [0.0] * config.NOTE_FEATURE_DIM
     current_note = notes_in_sequence[target_note_index]
     
-    features[0] = current_note["duration"] / 1920.0
+    features[0] = current_note["seconds"] / 2.0      
+    features[5] = current_note["tone"] / 127.0
 
     if target_note_index > 0:
         prev_note = notes_in_sequence[target_note_index - 1]
         features[1] = (current_note["tone"] - prev_note["tone"]) / 127.0
-        gap = current_note['position'] - (prev_note['position'] + prev_note['duration'])
-        features[2] = gap / 1920.0 if gap > 0 else 0.0
+        
+        prev_end_pos = prev_note['position'] + prev_note['duration']
+        gap_ticks = max(0, current_note['position'] - prev_end_pos)
+        
+        if gap_ticks > 0:
+            tempos = current_note.get('tempos', [{"position": 0, "bpm": 120}])
+            gap_seconds = position_to_seconds(prev_end_pos, gap_ticks, tempos)
+            features[2] = gap_seconds / 1.0
+        else:
+            features[2] = 0.0
     
     if target_note_index < len(notes_in_sequence) - 1:
         next_note = notes_in_sequence[target_note_index + 1]
         features[3] = (next_note["tone"] - current_note["tone"]) / 127.0
-        gap = next_note['position'] - (current_note['position'] + current_note['duration'])
-        features[4] = gap / 1920.0 if gap > 0 else 0.0
         
-    features[5] = current_note["tone"] / 127.0
-    
+        current_end_pos = current_note['position'] + current_note['duration']
+        gap_ticks = max(0, next_note['position'] - current_end_pos)
+        
+        if gap_ticks > 0:
+            tempos = current_note.get('tempos', [{"position": 0, "bpm": 120}])
+            gap_seconds = position_to_seconds(current_end_pos, gap_ticks, tempos)
+            features[4] = gap_seconds / 1.0
+        else:
+            features[4] = 0.0
+        
     return features
 
 def _extract_pitch_params(note: dict):
@@ -158,8 +220,7 @@ class PitchDataset(Dataset):
             'encoder_features': torch.FloatTensor(encoder_note_features),
             'encoder_phonemes': torch.LongTensor(encoder_phoneme_ids),
             'decoder_input': torch.FloatTensor(decoder_input),
-            'target_output': torch.FloatTensor(target_output),
-            'target_duration': torch.FloatTensor([target_note['duration'] / 1920.0]) # Normalized duration
+            'target_output': torch.FloatTensor(target_output)
         }
 
 def collate_fn(batch):
@@ -175,8 +236,6 @@ def collate_fn(batch):
     padded_decoder_inputs = torch.nn.utils.rnn.pad_sequence(decoder_inputs, batch_first=True, padding_value=0.0)
     padded_target_outputs = torch.nn.utils.rnn.pad_sequence(target_outputs, batch_first=True, padding_value=0.0)
 
-    target_durations = torch.cat([item['target_duration'] for item in batch])
-
     target_mask = (padded_target_outputs.sum(dim=-1) != 0)
 
     return {
@@ -184,6 +243,5 @@ def collate_fn(batch):
         'encoder_phonemes': padded_encoder_phonemes,
         'decoder_input': padded_decoder_inputs,
         'target_output': padded_target_outputs,
-        'target_mask': target_mask,
-        'target_duration': target_durations
+        'target_mask': target_mask
     } 

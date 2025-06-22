@@ -65,11 +65,10 @@ def train_epoch(model, dataloader, optimizer, criterion, teacher_forcing_ratio):
         decoder_input = batch['decoder_input'].to(config.DEVICE)
         target_output = batch['target_output'].to(config.DEVICE)
         target_mask = batch['target_mask'].to(config.DEVICE)
-        target_duration = batch['target_duration'].to(config.DEVICE)
 
         optimizer.zero_grad()
         
-        predictions = model(encoder_features, encoder_phonemes, decoder_input, target_duration, teacher_forcing_ratio)
+        predictions = model(encoder_features, encoder_phonemes, decoder_input, teacher_forcing_ratio)
         
         loss, xy_loss, shape_loss, y_penalty = criterion(predictions, target_output, target_mask)
 
@@ -105,9 +104,8 @@ def evaluate_epoch(model, dataloader, criterion):
             decoder_input = batch['decoder_input'].to(config.DEVICE)
             target_output = batch['target_output'].to(config.DEVICE)
             target_mask = batch['target_mask'].to(config.DEVICE)
-            target_duration = batch['target_duration'].to(config.DEVICE)
             
-            predictions = model(encoder_features, encoder_phonemes, decoder_input, target_duration, teacher_forcing_ratio=0)
+            predictions = model(encoder_features, encoder_phonemes, decoder_input, teacher_forcing_ratio=0)
             
             loss, xy_loss, shape_loss, y_penalty = criterion(predictions, target_output, target_mask)
             
@@ -136,9 +134,8 @@ def plot_predictions(model, dataset, epoch, num_examples=20):
             encoder_phonemes = sample['encoder_phonemes'].unsqueeze(0).to(config.DEVICE)
             decoder_input = sample['decoder_input'].unsqueeze(0).to(config.DEVICE)
             target_output = sample['target_output']
-            target_duration = sample['target_duration'].to(config.DEVICE)
             
-            prediction = model(encoder_features, encoder_phonemes, decoder_input, target_duration, teacher_forcing_ratio=0).squeeze(0).cpu().numpy()
+            prediction = model(encoder_features, encoder_phonemes, decoder_input, teacher_forcing_ratio=0).squeeze(0).cpu().numpy()
             
             true_len = len(target_output)
             target_output = target_output.numpy()

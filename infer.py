@@ -29,20 +29,14 @@ def predict_pitch_curve(model, note_context_window, phoneme_to_idx):
     encoder_features_tensor = torch.FloatTensor(encoder_note_features).unsqueeze(0).to(config.DEVICE)
     encoder_phonemes_tensor = torch.LongTensor(encoder_phoneme_ids).unsqueeze(0).to(config.DEVICE)
     
-    target_note = note_context_window[target_note_in_window_idx]
-    target_duration_tensor = torch.FloatTensor([target_note['duration'] / 1920.0]).to(config.DEVICE)
-    
     with torch.no_grad():
         encoder_outputs, hidden, cell = model.encoder(encoder_features_tensor, encoder_phonemes_tensor)
         
         current_input_point = torch.FloatTensor([[0.0, 0.0, -2.0]]).unsqueeze(1).to(config.DEVICE)
-        
-        duration_tensor = target_duration_tensor.unsqueeze(1).unsqueeze(1).expand(-1, 1, 1)
 
         predicted_points = []
         for _ in range(config.MAX_PITCH_POINTS):
-            current_input_with_duration = torch.cat([current_input_point, duration_tensor], dim=2)
-            output, hidden, cell = model.decoder(current_input_with_duration, hidden, cell, encoder_outputs)
+            output, hidden, cell = model.decoder(current_input_point, hidden, cell, encoder_outputs)
             current_input_point = output
             predicted_point = output.squeeze(0).squeeze(0).cpu().numpy()
             
@@ -50,7 +44,7 @@ def predict_pitch_curve(model, note_context_window, phoneme_to_idx):
                 break
                 
             predicted_points.append(predicted_point)
-            print(len(predicted_points))
+            
     return predicted_points
 
 def convert_predictions_to_ustx_format(predicted_points, note_duration):
@@ -84,6 +78,10 @@ def convert_predictions_to_ustx_format(predicted_points, note_duration):
     final_points_map = {p['x']: p for p in base_points}
 
     new_pitch_data = sorted(list(final_points_map.values()), key=lambda p: p["x"])
+    
+    if new_pitch_data and new_pitch_data[-1]["x"] < note_duration*0.8:
+        new_pitch_data[-1]["y"] = 0.0
+        new_pitch_data[-1]["shape"] = "o"
         
     return new_pitch_data
 
@@ -119,44 +117,56 @@ def main(ustx_path, output_path):
     if not ustx_data:
         return
         
-    all_notes = []
-    for part in ustx_data.get("voice_parts", []):
+    tempos = ustx_data.get("tempos", [{"position": 0, "bpm": 120}])
+    
+    total_notes = 0
+    for part_idx, part in enumerate(ustx_data.get("voice_parts", [])):
         track_notes = []
+        print(f"Processing track {part_idx+1}/{len(ustx_data.get('voice_parts', []))}")
+        
         for note in part.get("notes", []):
             norm_lyric = utils.normalize_phoneme(note["lyric"])
             if not norm_lyric:
                 continue
+                
+            seconds = utils.position_to_seconds(note["position"], note["duration"], tempos)
+            
             track_notes.append({
                 "position": note["position"],
                 "duration": note["duration"],
+                "seconds": seconds,
                 "tone": note["tone"],
                 "lyric": norm_lyric,
-                "original_note": note
+                "original_note": note,
+                "tempos": tempos
             })
+        
         track_notes.sort(key=lambda n: n['position'])
-        all_notes.extend(track_notes)
+        total_notes += len(track_notes)
+        
+        if not track_notes:
+            print(f"  No processable notes found in track {part_idx+1}")
+            continue
+            
+        print(f"  Predicting pitches for {len(track_notes)} notes in track {part_idx+1}...")
+        half_seq = config.SEQUENCE_LEN // 2
+        
+        for i in tqdm(range(len(track_notes)), desc=f"Track {part_idx+1}"):
+            start = max(0, i - half_seq)
+            end = min(len(track_notes), i + half_seq + 1)
+            note_window = track_notes[start:end]
+            
+            predicted_points = predict_pitch_curve(model, note_window, phoneme_to_idx)
+            
+            target_note_duration = track_notes[i]["duration"]
+            new_pitch_data = convert_predictions_to_ustx_format(predicted_points, target_note_duration)
+            
+            if new_pitch_data:
+                track_notes[i]["original_note"]["pitch"]["data"] = new_pitch_data
 
-    if not all_notes:
+    if total_notes == 0:
         print("No processable notes found in the USTX file.")
         return
-
-    print(f"Predicting pitches for {len(all_notes)} notes...")
-    half_seq = config.SEQUENCE_LEN // 2
-    
-    for i in tqdm(range(len(all_notes)), desc="Predicting Pitch Curves"):
-        start = max(0, i - half_seq)
-        end = min(len(all_notes), i + half_seq + 1)
-        note_window = all_notes[start:end]
-        
-        predicted_points = predict_pitch_curve(model, note_window, phoneme_to_idx)
-        
-        target_note_duration = all_notes[i]["duration"]
-        new_pitch_data = convert_predictions_to_ustx_format(predicted_points, target_note_duration)
-        
-        if new_pitch_data:
-            all_notes[i]["original_note"]["pitch"]["data"] = new_pitch_data
-        else:
-            pass 
             
     print(f"Saving tuned output to {output_path}...")
     ustx_data['comment'] = "Tuned by AutoPitch made by asoqwer (Emerald Project)"
@@ -166,7 +176,6 @@ def main(ustx_path, output_path):
         f.write('cache_dir: UCache\n')
         f.write('ustx_version: "0.6"\n')
         f.write('resolution: 480\n')
-        f.write('bpm: 120\n')
         f.write('beat_per_bar: 4\n')
         yaml.dump(ustx_data, f, allow_unicode=True)
     print("Inference complete.")

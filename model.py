@@ -94,7 +94,7 @@ class Decoder(nn.Module):
         self.num_layers = num_layers
         self.attention = attention
         
-        decoder_input_dim = 3 + 1 # pitch points + duration
+        decoder_input_dim = 3 # pitch points
         
         self.lstm = nn.LSTM(
             hidden_dim + decoder_input_dim,
@@ -126,7 +126,7 @@ class Seq2Seq(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def forward(self, encoder_features, encoder_phonemes, decoder_input, target_duration, teacher_forcing_ratio=0.5):
+    def forward(self, encoder_features, encoder_phonemes, decoder_input, teacher_forcing_ratio=0.5):
         batch_size = decoder_input.shape[0]
         target_len = decoder_input.shape[1]
         decoder_output_dim = self.decoder.output_dim
@@ -137,13 +137,9 @@ class Seq2Seq(nn.Module):
         
         current_input_point = decoder_input[:, 0, :].unsqueeze(1)
 
-        duration_tensor = target_duration.unsqueeze(1).unsqueeze(1).expand(-1, 1, 1) # [batch_size, 1, 1]
-
         for t in range(target_len):
 
-            current_input_with_duration = torch.cat([current_input_point, duration_tensor], dim=2)
-
-            output, hidden, cell = self.decoder(current_input_with_duration, hidden, cell, encoder_outputs)
+            output, hidden, cell = self.decoder(current_input_point, hidden, cell, encoder_outputs)
             
             outputs[:, t, :] = output.squeeze(1)
             
