@@ -131,16 +131,17 @@ def parse_ustx_files(ustx_dir):
     print(f"Total notes extracted: {len(all_notes)}")
     return all_notes
 
+
 def _extract_note_features(notes_in_sequence, target_note_index):
     features = [0.0] * config.NOTE_FEATURE_DIM
     current_note = notes_in_sequence[target_note_index]
     
-    features[0] = current_note["seconds"] / 2.0      
+    features[0] = current_note["seconds"] / 10.0      
     features[5] = current_note["tone"] / 127.0
 
     if target_note_index > 0:
         prev_note = notes_in_sequence[target_note_index - 1]
-        features[1] = (current_note["tone"] - prev_note["tone"]) / 127.0
+        features[1] = (current_note["tone"] - prev_note["tone"]) / 12.0
         
         prev_end_pos = prev_note['position'] + prev_note['duration']
         gap_ticks = max(0, current_note['position'] - prev_end_pos)
@@ -154,7 +155,7 @@ def _extract_note_features(notes_in_sequence, target_note_index):
     
     if target_note_index < len(notes_in_sequence) - 1:
         next_note = notes_in_sequence[target_note_index + 1]
-        features[3] = (next_note["tone"] - current_note["tone"]) / 127.0
+        features[3] = (next_note["tone"] - current_note["tone"]) / 12.0
         
         current_end_pos = current_note['position'] + current_note['duration']
         gap_ticks = max(0, next_note['position'] - current_end_pos)
@@ -169,18 +170,19 @@ def _extract_note_features(notes_in_sequence, target_note_index):
     return features
 
 def _extract_pitch_params(note: dict):
-    # [<bos>, [x, y, shape], [x, y, shape], ..., <eos>]
-    params = [[0.0, 0.0, -2.0]] # <bos> token
-    for point in note['pitch']:
+    pitch_points = note['pitch']
+    
+    params = [[0.0, 0.0, -2.0]]  # <bos> token
+    
+    for point in pitch_points:
         shape_map = {'i': -1.0, 'o': 1.0, 'io': 0.0}
         shape = shape_map.get(point.get('shape', 'io'), 0.0)
         x = point['x'] / 100.0
         y = point['y'] / 100.0
         params.append([x, y, shape])
-    params.append([0.0, 0.0, 2.0]) # <eos> token
+    
+    params.append([0.0, 0.0, 2.0])  # <eos> token
     return params
-
-
 
 class PitchDataset(Dataset):
     def __init__(self, all_notes, phoneme_to_idx, sequence_len):

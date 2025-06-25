@@ -26,12 +26,13 @@ class Encoder(nn.Module):
         self.fc_hidden = nn.Linear(hidden_dim * 2, hidden_dim)
         self.fc_cell = nn.Linear(hidden_dim * 2, hidden_dim)
         self.dropout = nn.Dropout(dropout)
+        self.pos_encoding = PositionalEncoding(lstm_input_dim)
 
     def forward(self, note_features, phonemes):
         embedded_phonemes = self.dropout(self.phoneme_embedding(phonemes))
         
         lstm_input = torch.cat((embedded_phonemes, note_features), dim=2)
-        
+        lstm_input = self.pos_encoding(lstm_input)
         outputs, (hidden, cell) = self.lstm(lstm_input)
         
         hidden = torch.cat((hidden[0:self.num_layers,:,:], hidden[self.num_layers:self.num_layers*2,:,:]), dim=2)
@@ -151,3 +152,30 @@ class Seq2Seq(nn.Module):
                 current_input_point = output
             
         return outputs 
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super().__init__()
+        
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        
+        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) * 
+                           -(math.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        if d_model % 2 == 1:
+            pe[:, 1::2] = torch.cos(position * div_term[:-1])
+        else:
+            pe[:, 1::2] = torch.cos(position * div_term)
+            
+        pe = pe.unsqueeze(0).transpose(0, 1)  # [max_len, 1, d_model]
+        
+        self.register_buffer('pe', pe)
+    
+    def forward(self, x):
+        # x shape: [batch_size, seq_len, d_model]
+        # pe shape: [max_len, 1, d_model]
+        
+        seq_len = x.size(1)
+        return x + self.pe[:seq_len, :].transpose(0, 1)  # [batch_size, seq_len, d_model]
